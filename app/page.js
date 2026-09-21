@@ -7,6 +7,8 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL
 const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 const supabase = url && key ? createClient(url, key) : null
 const today = () => new Date().toISOString().slice(0, 10)
+const LOCAL_KEY = 'hatashigoto-test-data-v1'
+const localInitial = { fields: [], groups: [], systems: [{ id: 'oats9', name: '燕麦9', crop: '燕麦', work_steps: [{ id: 'step1', name: '耕起', step_order: 1 }, { id: 'step2', name: '播種', step_order: 2 }, { id: 'step3', name: '鎮圧', step_order: 3 }] }], plantings: [], tasks: [] }
 
 export default function Page() {
   const [session, setSession] = useState(null)
@@ -50,12 +52,33 @@ export default function Page() {
     return () => supabase.removeChannel(channel)
   }, [farm])
 
-  if (!supabase) return <Setup />
+  if (!supabase) return <LocalApp />
   if (loading) return <main className="center">読み込み中…</main>
   if (!session) return <Auth onMessage={setMessage} message={message} />
   if (!farm) return <FarmSetup user={session.user} setFarm={setFarm} message={message} setMessage={setMessage} />
   return <FarmApp {...{farm,data,page,setPage,load,message,setMessage}} signOut={() => supabase.auth.signOut()} />
 }
+
+function LocalApp() {
+  const [data, setData] = useState(() => {
+    if (typeof window === 'undefined') return localInitial
+    try { return JSON.parse(window.localStorage.getItem(LOCAL_KEY)) || localInitial } catch { return localInitial }
+  })
+  const [page, setPage] = useState('home'); const [show, setShow] = useState(null)
+  const save = next => { setData(next); window.localStorage.setItem(LOCAL_KEY, JSON.stringify(next)) }
+  const farm = { id: 'local-test', name: 'テスト農場', access_code: '端末内保存' }
+  const pTasks = pid => data.tasks.filter(t=>t.planting_id===pid)
+  const status = p => { const ts=pTasks(p.id); return !ts.some(t=>t.done_at)?['未着手','todo']:ts.every(t=>t.done_at)?['完了','done']:['進行中','progress'] }
+  const complete = task => save({...data,tasks:data.tasks.map(t=>t.id===task.id?{...t,done_at:today()}:t)})
+  const clear = () => { if (window.confirm('テストデータをすべて削除しますか？')) { window.localStorage.removeItem(LOCAL_KEY); save(localInitial); setPage('home') } }
+  const content = { home:<Home data={data} pTasks={pTasks} status={status} complete={complete}/>, fields:<Fields data={data} farm={farm} reload={()=>{}} open={setShow}/>, plantings:<Plantings data={data} status={status} open={setShow}/>, tasks:<Tasks tasks={data.tasks} plantings={data.plantings} complete={complete}/>, systems:<Systems systems={data.systems} open={setShow}/> }[page]
+  return <><header><div><p className="eyebrow">テスト運用・この端末に保存</p><h1>畑しごと</h1></div><div className="share"><button className="link" onClick={clear}>テストデータを消去</button></div></header><nav>{[['home','ホーム'],['fields','畑・グループ'],['plantings','作付け'],['tasks','作業'],['systems','作業体系']].map(([id,label])=><button className={page===id?'active':''} onClick={()=>setPage(id)} key={id}>{label}</button>)}</nav><main><p className="local-note">テスト運用モードです。データはこのスマホ／PCだけに保存されます。</p>{content}</main>{show&&<LocalDialog type={show} data={data} close={()=>setShow(null)} save={save}/>}</>
+}
+
+function LocalDialog({type,data,close,save}) {
+  const [name,setName]=useState(''); const [area,setArea]=useState(''); const [memo,setMemo]=useState(''); const [crop,setCrop]=useState('燕麦');const [systemId,setSystemId]=useState('');const [fieldIds,setFieldIds]=useState([]);const [steps,setSteps]=useState('耕起\n播種\n鎮圧'); const [error,setError]=useState(''); const makeId=()=>crypto.randomUUID(); const titles={field:'畑を登録',group:'グループを作成',system:'作業体系を登録',planting:'作付けを登録'};
+  const submit=e=>{e.preventDefault(); if(type==='field') save({...data,fields:[...data.fields,{id:makeId(),name,area:Number(area),memo}]}); if(type==='group') save({...data,groups:[...data.groups,{id:makeId(),name,group_fields:fieldIds.map(field_id=>({field_id}))}]}); if(type==='system'){const sid=makeId();save({...data,systems:[...data.systems,{id:sid,name,crop,work_steps:steps.split('\n').map(x=>x.trim()).filter(Boolean).map((name,i)=>({id:makeId(),name,step_order:i+1}))}]})}; if(type==='planting'){const sys=data.systems.find(x=>x.id===systemId);if(!sys||!fieldIds.length)return setError('作業体系と対象畑を選択してください。');const ps=fieldIds.map(field_id=>({id:makeId(),field_id,crop,system_id:systemId,planned_at:today(),fields:data.fields.find(f=>f.id===field_id),work_systems:{name:sys.name}}));const tasks=ps.flatMap(p=>(sys.work_steps||[]).map(s=>({id:makeId(),planting_id:p.id,name:s.name,step_order:s.step_order,done_at:null})));save({...data,plantings:[...data.plantings,...ps],tasks:[...data.tasks,...tasks]})} close()}
+  return <div className="backdrop"><form className="dialog" onSubmit={submit}><h2>{titles[type]}</h2>{type==='field'&&<><Label t="畑名"><input required value={name} onChange={e=>setName(e.target.value)}/></Label><Label t="面積（a）"><input type="number" min="0.1" step="0.1" required value={area} onChange={e=>setArea(e.target.value)}/></Label><Label t="メモ"><textarea value={memo} onChange={e=>setMemo(e.target.value)}/></Label></>}{type==='group'&&<><Label t="グループ名"><input required value={name} onChange={e=>setName(e.target.value)}/></Label><CheckList items={data.fields} selected={fieldIds} setSelected={setFieldIds}/></>}{type==='system'&&<><Label t="作業体系名"><input required value={name} onChange={e=>setName(e.target.value)} placeholder="例: 燕麦9"/></Label><Label t="作物"><input required value={crop} onChange={e=>setCrop(e.target.value)}/></Label><Label t="作業（1行に1つ）"><textarea required value={steps} onChange={e=>setSteps(e.target.value)}/></Label></>}{type==='planting'&&<><Label t="作物"><input required value={crop} onChange={e=>setCrop(e.target.value)}/></Label><Label t="作業体系"><select required value={systemId} onChange={e=>setSystemId(e.target.value)}><option value="">選択してください</option>{data.systems.map(s=><option key={s.id} value={s.id}>{s.name}（{s.crop}）</option>)}</select></Label><CheckList items={data.fields} selected={fieldIds} setSelected={setFieldIds}/></>}{error&&<p className="notice">{error}</p>}<footer><button type="button" className="secondary" onClick={close}>キャンセル</button><button>保存</button></footer></form></div> }
 
 function Setup() { return <main className="center panel"><h1>畑しごと</h1><p>公開前の設定が必要です。</p><p><code>NEXT_PUBLIC_SUPABASE_URL</code> と <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code> を Vercel の環境変数へ設定してください。</p></main> }
 function Auth({ onMessage, message }) {
